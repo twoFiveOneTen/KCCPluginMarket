@@ -1,0 +1,11 @@
+{
+  "name": "kcc",
+  "description": "KangKang's personal Claude Code skills — productivity tools for daily development workflows.",
+  "author": {
+    "name": "zhangkangkang"
+  },
+  "homepage": "https://github.com/zhangkangkang/KCCPluginMarket",
+  "repository": "https://github.com/zhangkangkang/KCCPluginMarket",
+  "license": "MIT",
+  "skills": "./skills"
+}

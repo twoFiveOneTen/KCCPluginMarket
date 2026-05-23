@@ -1,0 +1,19 @@
+{
+  "name": "kcc",
+  "owner": {
+    "name": "zhangkangkang"
+  },
+  "metadata": {
+    "description": "KangKang's personal Claude Code skill marketplace."
+  },
+  "plugins": [
+    {
+      "name": "kcc",
+      "source": {
+        "source": "github",
+        "repo": "zhangkangkang/KCCPluginMarket"
+      },
+      "description": "KangKang's personal Claude Code skills — productivity tools for daily development workflows."
+    }
+  ]
+}
