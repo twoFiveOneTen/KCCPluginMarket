@@ -1,5 +1,5 @@
 {
-  "name": "kcc",
+  "name": "kk-common-market",
   "owner": {
     "name": "zhangkangkang"
   },
@@ -8,7 +8,7 @@
   },
   "plugins": [
     {
-      "name": "kcc",
+      "name": "kk-common-plugin",
       "source": {
         "source": "github",
         "repo": "twoFiveOneTen/KCCPluginMarket"

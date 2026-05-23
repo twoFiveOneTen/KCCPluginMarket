@@ -7,8 +7,8 @@ KangKang 的个人 Claude Code 插件市场。通过 Claude Code 的插件机制
 ```
 KCCPluginMarket/
 ├── .claude-plugin/
-│   ├── plugin.json       ← 插件 manifest（定义插件名为 "kcc"，skills 路径为 ./skills）
-│   └── marketplace.json  ← 市场 manifest（定义市场 ID 为 "kcc"）
+│   ├── plugin.json       ← 插件 manifest（定义插件名为 "kk-common-plugin"，skills 路径为 ./skills）
+│   └── marketplace.json  ← 市场 manifest（定义市场 ID 为 "kk-common-market"）
 └── skills/
     └── <skill-id>/
         └── SKILL.md
@@ -27,16 +27,16 @@ KCCPluginMarket/
 ```json
 {
   "extraKnownMarketplaces": {
-    "kcc": {
+    "kk-common-market": {
       "source": {
         "source": "github",
-        "repo": "zhangkangkang/KCCPluginMarket"
+        "repo": "twoFiveOneTen/KCCPluginMarket"
       },
       "autoUpdate": true
     }
   },
   "enabledPlugins": {
-    "kcc@kcc": true
+    "kk-common-plugin@kk-common-market": true
   }
 }
 ```
@@ -53,4 +53,4 @@ git commit -m "feat: add my-new-skill"
 git push
 ```
 
-新 Skill 随 `kcc` 插件自动加载，无需修改任何配置。
+新 Skill 随 `kk-common-plugin` 插件自动加载，无需修改任何配置。
