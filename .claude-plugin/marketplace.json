@@ -8,7 +8,7 @@
   },
   "plugins": [
     {
-      "name": "kk-common-plugin",
+      "name": "kk-dev-plugin",
       "source": {
         "source": "github",
         "repo": "twoFiveOneTen/KCCPluginMarket"
