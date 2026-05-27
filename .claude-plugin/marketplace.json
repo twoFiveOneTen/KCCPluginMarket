@@ -9,18 +9,12 @@
   "plugins": [
     {
       "name": "kk-dev-plugin",
-      "source": {
-        "source": "github",
-        "repo": "twoFiveOneTen/KCCPluginMarket"
-      },
+      "source": "./plugins/kk-dev-plugin",
       "description": "KangKang's personal Claude Code skills — productivity tools for daily development workflows."
     },
     {
       "name": "kk-life-tool",
-      "source": {
-        "source": "github",
-        "repo": "twoFiveOneTen/KCCPluginMarket"
-      },
+      "source": "./plugins/kk-life-tool",
       "description": "KangKang's life assistant skills — daily tools for news, weather, and more."
     }
   ]
