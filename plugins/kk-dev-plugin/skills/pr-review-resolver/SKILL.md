@@ -80,6 +80,7 @@ Then make a judgment call: **is this a real problem that still exists?**
 - The comment is purely subjective preference with no objective standard (e.g. "I prefer X" with no project rule backing it)
 - The comment was from the PR author themselves
 - The concern was already addressed in a subsequent commit visible in the diff
+- The comment flags a missing/local dependency or package reference (e.g. a local SwiftPM package like `Components/KKCommon`, an untracked local component directory, or a `relativePath` dependency that isn't in the checkout). During local development the project may reference dependencies locally and switch them to remote later — ignore these as expected for the dev phase, do NOT mark them as `需确认`
 
 When in doubt, lean toward fixing rather than ignoring — it's better to make a harmless improvement than to silently discard a real concern.
 
@@ -126,3 +127,4 @@ After the table, add a one-line summary:
 - **Thread with multiple comments**: Focus on the most recent comment in the thread; earlier comments are context.
 - **File not found locally**: Mark as `⚠️ 需确认` with note that the file path couldn't be resolved.
 - **Non-Swift files** (config, Markdown, etc.): Apply the same logic — fix if it's a real issue, ignore if not.
+- **Local dependency / package reference issues**: Comments about a local package or component dir missing from the repo checkout (e.g. `Components/KKCommon` referenced via local `relativePath`, an untracked component folder, or a nested-git package not committed) are expected during local development — the components are switched to remote dependencies before release. Treat these as `⏭ 已忽略` and note "本地开发期依赖,发布时改为远程".
