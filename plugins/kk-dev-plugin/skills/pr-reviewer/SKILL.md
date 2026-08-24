@@ -1,6 +1,6 @@
 ---
 name: pr-reviewer
-description: "Reviews the newest GitHub pull request on the current branch — reads the diff, finds correctness, security, performance and convention problems, outputs a Chinese review report, and after the user confirms, posts each problem as an inline comment anchored to the exact code line, skipping anything an existing comment already raised. Use this skill whenever the user asks to review a PR, look over a pull request, check a PR before merging, leave review comments on a PR, or do a code review on GitHub — even if they don't say 'pr-reviewer' explicitly. Also trigger on phrasings like 'review 一下我的 PR', '帮我看看这个 pull request', '给 PR 提点意见', '把问题评论到 PR 上', '合并前帮我审一下'. This skill PRODUCES review comments; if the user instead wants to handle comments other people already left on their PR, use pr-review-resolver."
+description: "Reviews the newest GitHub pull request on the current branch — reads the diff, finds correctness, security, performance, design/over-engineering and convention problems, outputs a Chinese review report, and after the user confirms, posts each problem as an inline comment anchored to the exact code line, skipping anything an existing comment already raised. Use this skill whenever the user asks to review a PR, look over a pull request, check a PR before merging, leave review comments on a PR, or do a code review on GitHub — even if they don't say 'pr-reviewer' explicitly. Also trigger on phrasings like 'review 一下我的 PR', '帮我看看这个 pull request', '给 PR 提点意见', '把问题评论到 PR 上', '合并前帮我审一下'. This skill PRODUCES review comments; if the user instead wants to handle comments other people already left on their PR, use pr-review-resolver."
 ---
 
 # PR Reviewer
@@ -29,13 +29,25 @@ Stop and tell the user if:
 
 Read the diff in full. For anything non-trivial, also read the surrounding file from disk — a diff hunk shows you 3 lines of context, which is rarely enough to tell whether a change is actually safe. Checking how a changed function is called elsewhere is often where the real bug shows up.
 
-Look across four dimensions:
+Look across five dimensions:
 
 **正确性与崩溃风险** — 逻辑错误、空值/强制解包、数组越界、边界条件（0、负数、空集合）、并发竞态、错误被吞掉或未处理、资源未释放、异步回调时序。
 
 **安全性** — 注入（SQL/命令/路径）、鉴权与权限校验缺失、密钥或 token 硬编码、用户输入未校验、不安全的反序列化、日志中泄露敏感信息。
 
 **性能** — 循环里发请求或查数据库（N+1）、主线程/UI 线程阻塞、不必要的重复计算、大对象全量拷贝、内存泄漏与循环引用、缺失的索引或缓存。
+
+**设计与可简化性** — 这一维度问的不是「有没有 bug」，而是「这些代码有没有必要存在」：
+- **该不该写** — 为假想需求预留的能力、没有第二个调用方的抽象（单实现的接口、只有一处产物的工厂、永不变化的配置项）都是负债。
+- **该不该自己写** — 仓库里是否已有同样的工具/组件/类型（先搜再判断，重复造已存在的轮子是最常见的问题）；标准库或平台能力能否直接覆盖；已装的依赖能否解决，而不是新增一个依赖来做几行就能完成的事。
+- **写在哪** — 职责是否越界（UI 层做业务、model 层直接发网络请求）、改动是否把复杂度堆在了错误的层。
+- **该不该下沉** — 先确认仓库真实的分层（找 `Common/`、`Base/`、`Core/`、`Platform/` 这类目录，或独立的基础库 pod/package/module），按它判断，别臆造一套分层。三种情况：
+  - **该沉没沉** — 新增的工具方法、扩展、常量、通用 UI 组件放在了某个业务模块里，但内容与该业务无关；或者已经有另一个业务模块写了几乎相同的一份 —— 后者是最硬的证据，指出来时要给出那个已有实现的路径。
+  - **绕过了平台层** — 业务里自己实现了平台层已统一封装的能力（网络、路由、埋点、登录态、主题、日志、存储）。这类要提，因为绕过封装通常会漏掉统一的重试、鉴权、上报逻辑，后果是具体的。
+  - **沉过头了** — 只有一个业务方在用的东西塞进公共层，会让公共层膨胀，且之后每次改动都要让所有接入方跟着回归。**只有一个使用方时，留在业务层是对的**，别为「以后可能有人用」提前下沉。
+- **能不能更短** — 同样行为下明显更直接的写法、可以合并的分支、可以删掉的中间层。
+
+判断依据同样是仓库既有写法，不套用通用偏好。指出时要能说清**删掉/简化后少了什么**，说不清就别提。这类问题多数不该挂行内评论（见下），归入报告的「设计与简化建议」。
 
 **可读性与项目规范** — 命名词不达意、重复代码、魔法数字、死代码、过长函数。规范部分要有依据：先看仓库里的 `CLAUDE.md`、lint 配置、以及周边同类文件的既有写法，用它们当标准，而不是套用通用偏好。
 
@@ -47,7 +59,7 @@ Skip these — they cost the author time and buy nothing:
 - 纯个人偏好，且仓库里没有任何规范支持
 - 复述代码在做什么，没有指出问题
 - 与本次 diff 无关的既有代码（除非这次改动让它变危险了）
-- 需要重构整个模块才能解决的宏观建议 —— 放进报告的总结里，不要挂成行内评论
+- 跨文件、需要重构整个模块才能解决的架构与简化建议 —— 写进报告的「设计与简化建议」，不要挂成行内评论。但**能落到具体某几行**的设计问题可以挂（比如「这个 protocol 只有一个实现，直接用具体类型」「这个 helper 仓库里已有 `Foo.bar()`」）
 - 自动生成的文件、锁文件、格式化产生的纯空白改动
 
 Err on the side of fewer, sharper comments. A review with 5 real problems gets acted on; a review with 40 nitpicks gets ignored.
@@ -97,9 +109,18 @@ This is the step the user explicitly asked for, and it's the one that's easy to 
 |---------|------|---------|
 | `src/Foo.swift:42` | 强制解包 | @alice 已提出 |
 
+### 设计与简化建议
+
+{落不到具体行、或需要跨文件重构的设计问题。没有就整节省略，不要硬凑}
+
+- **`NetworkClient` 协议只有一个实现** — `RealNetworkClient` 是唯一实现，测试也没用它做替身。直接用具体类型，可以删掉协议和一层转发。
+- **`DateFormatterCache` 与 `Utils/DateFormat.swift` 重复** — 后者已提供同样的缓存逻辑，建议复用而不是新写一份。
+- **`Trade/Retry.swift` 建议下沉到 `Common/`** — 这个重试封装与交易业务无关，`Account/NetRetry.swift` 里已有几乎相同的一份，两个业务都在用，适合合并下沉。
+- **`Trade/Report.swift` 绕过了平台埋点** — 直接调 `URLSession` 上报，跳过了 `Platform/Tracker`，会漏掉统一的失败重试和公共参数。
+
 ### 整体评价
 
-{两三句话：这个 PR 整体质量如何、有没有需要重构或架构层面讨论的点、能不能合并}
+{两三句话：这个 PR 整体质量如何、能不能合并}
 
 共发现 N 个问题（严重 X / 建议 Y / 提示 Z），跳过 M 个已有评论覆盖的问题。
 确认后我会把这 N 个问题作为行内评论发到 PR 对应代码行上。
@@ -108,7 +129,7 @@ This is the step the user explicitly asked for, and it's the one that's easy to 
 严重度：
 - `🔴 严重` — 会崩溃、有安全漏洞、逻辑明确错误，合并前必须修
 - `🟡 建议` — 性能问题、错误处理缺失、明确违反项目规范，应该修
-- `🔵 提示` — 可读性、命名、小重构，修不修都行
+- `🔵 提示` — 可读性、命名、小重构、可简化，修不修都行
 
 没发现问题时不要硬凑。直接说「PR #{number} 未发现需要指出的问题」，简述你检查了什么，然后停下。
 
