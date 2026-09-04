@@ -1,6 +1,6 @@
 ---
 name: pr-reviewer
-description: "Reviews the newest GitHub pull request on the current branch — reads the diff, finds correctness, security, performance, design/over-engineering and convention problems, outputs a Chinese review report, and after the user confirms, posts each problem as an inline comment anchored to the exact code line, skipping anything an existing comment already raised. Use this skill whenever the user asks to review a PR, look over a pull request, check a PR before merging, leave review comments on a PR, or do a code review on GitHub — even if they don't say 'pr-reviewer' explicitly. Also trigger on phrasings like 'review 一下我的 PR', '帮我看看这个 pull request', '给 PR 提点意见', '把问题评论到 PR 上', '合并前帮我审一下'. This skill PRODUCES review comments; if the user instead wants to handle comments other people already left on their PR, use pr-review-resolver."
+description: "Reviews the newest GitHub pull request on the current branch — reads the diff, finds correctness, security, performance, design/over-engineering and convention problems, outputs a Chinese review report, then asks the user via multiple-choice which findings to post (all / pick some / fix them locally instead / do nothing) and posts the chosen ones as inline comments anchored to the exact code line, skipping anything an existing comment already raised. Use this skill whenever the user asks to review a PR, look over a pull request, check a PR before merging, leave review comments on a PR, or do a code review on GitHub — even if they don't say 'pr-reviewer' explicitly. Also trigger on phrasings like 'review 一下我的 PR', '帮我看看这个 pull request', '给 PR 提点意见', '把问题评论到 PR 上', '合并前帮我审一下'. This skill PRODUCES review comments; if the user instead wants to handle comments other people already left on their PR, use pr-review-resolver."
 ---
 
 # PR Reviewer
@@ -82,9 +82,9 @@ This is the step the user explicitly asked for, and it's the one that's easy to 
 
 同时扫一眼 `review_bodies`（已有的 review 总结），有些人习惯把问题列在总结里而不是挂行内。
 
-## Step 4 — 输出报告并等待确认
+## Step 4 — 输出报告
 
-发布行内评论是对外可见、且难以撤回的动作，所以**先在对话里输出完整报告，等用户明确说「发」再执行 Step 5**。用户如果一开始就说了「直接发」「不用确认」，可以跳过等待。
+发布行内评论是对外可见、且难以撤回的动作，所以**先在对话里输出完整报告**，再用 Step 5 的选择题让用户决定发哪些。用户如果一开始就说了「直接发」「不用确认」，跳过 Step 5 直接发布。
 
 除代码标识符和文件路径外，报告全部用简体中文：
 
@@ -123,7 +123,6 @@ This is the step the user explicitly asked for, and it's the one that's easy to 
 {两三句话：这个 PR 整体质量如何、能不能合并}
 
 共发现 N 个问题（严重 X / 建议 Y / 提示 Z），跳过 M 个已有评论覆盖的问题。
-确认后我会把这 N 个问题作为行内评论发到 PR 对应代码行上。
 ```
 
 严重度：
@@ -133,9 +132,38 @@ This is the step the user explicitly asked for, and it's the one that's easy to 
 
 没发现问题时不要硬凑。直接说「PR #{number} 未发现需要指出的问题」，简述你检查了什么，然后停下。
 
-## Step 5 — 发布行内评论
+## Step 5 — 让用户点选，而不是打字
 
-用户确认后，把发现写成 findings JSON（写到临时文件即可，比如 `<git-dir>/pr-review/findings.json`）：
+报告出来后别问「要发吗？」再等用户敲一段话 —— 用 `AskUserQuestion` 把决定变成点击。用户不用把问题编号重新抄一遍，你也不用去猜「除了第二条其他都发」到底指哪几条。
+
+**第一问（单选）：整体怎么处理**
+
+- question：`PR #{number} 共发现 N 个问题，怎么处理？`
+- header：`处理方式`，`multiSelect: false`
+- 选项：
+  1. `全部发到 PR（推荐）` — N 个问题都作为行内评论挂到对应代码行
+  2. `挑选部分发` — 下一步逐条勾选
+  3. `不发 PR，我直接改` — 不留评论，直接在工作区把问题修掉
+  4. `先不处理` — 只要报告
+
+只有 1 个问题时省掉「挑选部分发」——一条东西没什么可挑的。
+
+**第二问（多选）：挑哪几条**（仅当用户选了「挑选部分发」，再发起一次 `AskUserQuestion`）
+
+`AskUserQuestion` 每题最多 4 个选项、每次最多 4 题，所以一轮最多摆 16 条。按报告里的顺序每 4 条切一题，`multiSelect: true`：
+
+- question：`勾选要发到 PR 的问题（第 1-4 条）`，header：`问题 1-4`
+- 每个选项 label 用 `#1 🔴 Foo.swift:42`（短，能一眼定位），description 用报告表格里那句问题说明
+
+问题超过 16 条时按严重度从高到低排序后分多轮问，让用户先看到最该发的那批。用户如果在某题选了 `Other` 并打字（比如「只发严重的」），照他说的做，别再追问一遍。
+
+勾选结果就是要发的问题列表，带着它走 Step 6；一条都没勾等同于「先不处理」，直接停下。
+
+**选了「不发 PR，我直接改」时**：不写 findings.json，改为逐条在工作区把问题修掉，每处只做修掉该问题所需的最小改动。改完输出一张表说明每条改了什么、哪条没改及原因。不要顺手 commit 或 push —— 那是另一个决定，等用户开口。
+
+## Step 6 — 发布行内评论
+
+把用户勾选的发现写成 findings JSON（写到临时文件即可，比如 `<git-dir>/pr-review/findings.json`）：
 
 ```json
 {
@@ -180,6 +208,6 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/pr-reviewer/scripts/post_review.py <git-dir
 - **当前分支有多个 PR**：`gh pr view` 取的是当前分支关联的那个。用户提到具体 PR 号时优先用用户给的。
 - **PR 是 Draft**：照常 review，在报告里注明这是草稿，评论语气偏建议。
 - **超大 PR（几千行以上）**：先按文件重要性排序，优先审核心逻辑，跳过锁文件、生成代码、纯格式化改动。在报告里说明你实际审了哪些文件、跳过了什么 —— 别让用户以为你全看了。
-- **PR 已合并或已关闭**：仍然可以评论，但先提醒用户这个 PR 已经 merged/closed，问是否还要发。
+- **PR 已合并或已关闭**：仍然可以评论，但要在报告开头注明它已经 merged/closed，并把这一点写进 Step 5 第一问的 question 里，让用户带着这个信息选。
 - **发布返回 422**：几乎都是行号不在 diff hunk 内。回到 `context.json` 的 `commentable` 重新对行号，别猜。
 - **本次没有可评论的发现，但有整体建议**：findings 的 `comments` 留空、只填 `summary` 也能发，会作为一条 review 总结出现。
