@@ -1,29 +1,55 @@
 ---
 name: ios-gui-tester
-description: "Takes a specified code change (a GitHub PR, uncommitted local edits, or a branch-to-branch diff), works out which user-visible behaviour it can affect, writes GUI test cases, waits for the user to approve them, then drives the iOS Simulator through the ios-simulator-mcp MCP server to execute each case with screenshots as evidence, and writes a Markdown test report into the repo. Use this skill whenever the user wants a code change verified through the UI rather than through unit tests: '帮我 GUI 测一下这个 PR', '这次改动在模拟器上跑一遍', '生成 GUI 测试用例并执行', '这个分支的改动会影响哪些界面，测一测', '出个界面测试报告', 'run GUI tests for these changes', 'verify this on the simulator', or when they ask what a diff breaks on screen and want it actually clicked through. Also trigger when the user asks for regression testing of a change on an iPhone simulator, or for a test report of a PR's UI impact. Do NOT use for reading a diff and commenting on code quality (use pr-reviewer) or for writing XCTest unit tests."
+description: "Takes a specified code change (a GitHub PR, uncommitted local edits, or a branch-to-branch diff), works out which user-visible behaviour it can affect, writes GUI test cases, waits for the user to approve them, then drives the iOS Simulator through whichever simulator MCP the session has (Claude Desktop's built-in one first, ios-simulator-mcp otherwise) to execute each case with screenshots as evidence, and writes a Markdown test report into the repo. Use this skill whenever the user wants a code change verified through the UI rather than through unit tests: '帮我 GUI 测一下这个 PR', '这次改动在模拟器上跑一遍', '生成 GUI 测试用例并执行', '这个分支的改动会影响哪些界面，测一测', '出个界面测试报告', 'run GUI tests for these changes', 'verify this on the simulator', or when they ask what a diff breaks on screen and want it actually clicked through. Also trigger when the user asks for regression testing of a change on an iPhone simulator, or for a test report of a PR's UI impact. Do NOT use for reading a diff and commenting on code quality (use pr-reviewer) or for writing XCTest unit tests."
 ---
 
 # iOS GUI Tester
 
 把一段代码改动，变成「在模拟器上真的点过一遍」的证据。
 
-流程是：**备好模拟器 MCP** → 拿改动 → 分析影响范围 → 写用例 → **停下来等用户确认** → 构建装包 → 逐条执行留证据 → 出报告。
+流程是：**选定模拟器 MCP** → 拿改动 → 分析影响范围 → 写用例 → **停下来等用户确认** → 构建装包 → 逐条执行留证据 → 出报告。
 
 四条底线，先说清楚：
 
 **用例没拿到用户明确同意，一步都不许往下走。** 写用例花几分钟，跑一轮要构建、装包、逐条点击，是几十倍的时间；方向错了这些全白花，而用户扫一眼用例表就能拦住。Step 4 末尾有一道必须走的确认关卡——**把用例贴出来不等于用户同意了**，贴完就开测是这个 skill 最常见的跑偏方式。
 
-**模拟器的每一次交互都走 `ios-simulator-mcp`**（工具名形如 `mcp__ios-simulator__ui_tap`）。不要用 `xcrun simctl` 敲点击、也不要去开 Simulator.app 自己点。理由不只是统一：这套工具能读到无障碍树（`ui_find_element` / `ui_describe_all`），控件位置和状态是**查出来的**，不是从截图上肉眼估的——这是 GUI 自动化里判定可靠与不可靠的分界线。命令行只保留两处 MCP 确实够不着的事（构建、boot 指定机型），Step 5 会点名，除此之外绕到命令行就是把用户能复核的现场变成黑箱。
+**模拟器的每一次交互都走模拟器 MCP**，用哪一套由 Step 0 定。不要用 `xcrun simctl` 敲点击、也不要去开 Simulator.app 自己点。理由不只是统一：MCP 驱动的每一步用户都在同一块屏幕上看得见、事后都能复核；绕到命令行或者手动点，就是把现场变成黑箱。命令行只保留 MCP 确实够不着的几件事（Step 0、Step 5 会点名），除此之外不扩大。
 
 **影响范围不等于「改了哪些文件」。** diff 给的是文件，用户看到的是页面。改一个共用函数，diff 里只有那一处，但界面上受影响的可能有五个入口——**回归就漏在这里**。所以分析必须沿调用链往上走到用户摸得到的入口，再横向找出所有共用这段代码的老功能。
 
 **报告里的每个「通过」都必须有当场看到的实据撑着。** GUI 测试最大的失效模式不是测出 bug，而是模型按「这么改了应该没问题」的推理写了一份全绿报告。你没点到的用例就写「阻塞」，测不了的改动就写「未覆盖」——一句诚实的「这块没测」比一条假绿用例值钱得多。
 
-## Step 0 — 确认 ios-simulator-mcp 在位
+## Step 0 — 选定模拟器 MCP
 
-先看当前会话的工具列表里有没有 `mcp__ios-simulator__*`（例如 `mcp__ios-simulator__get_booted_sim_id`）。**有就直接进 Step 1**，别多跑一遍安装检查。
+两套可选，**按这个顺序挑**，挑中哪套就整轮以它为主：
 
-没有的话，先把要做的事告诉用户——装 Facebook IDB（Homebrew + pipx）、把 MCP server 注册进 Claude Code——**得到他同意再执行**。这两条会动他机器上的环境，不是你该自作主张的范围。
+1. **Claude Desktop 内置**——工具名 `mcp__Claude_Code_iOS_Simulator__control` 和 `__build`。会话里有它就用它：零安装、自带实时面板（`attach`）、还能直接构建。
+2. **ios-simulator-mcp**——工具名形如 `mcp__ios-simulator__ui_tap`。内置那套不在会话里时用它。
+3. 两套都没有 → 走下面的安装流程装 ios-simulator-mcp。
+
+有工具就直接进 Step 1，别再多跑一遍安装检查。
+
+| | 内置 `Claude_Code_iOS_Simulator` | `ios-simulator-mcp` |
+|---|---|---|
+| 无障碍树（按文案找控件、查控件状态） | ❌ 没有 | ✅ `ui_find_element` / `ui_describe_all` |
+| 构建 | ✅ `build` / `build_status` | ❌ 得自己敲 `xcodebuild` |
+| 实时面板 | ✅ `attach`，用户看得见你点的每一下 | ⚠️ `open_simulator` 开 Simulator.app |
+| 截图落盘存证 | ❌ 只回到对话里 | ✅ `screenshot { output_path }` |
+| 录屏 | ❌ | ✅ `record_video` |
+| 前置依赖 | 无 | Facebook IDB |
+
+**两套都在会话里时：主驱动用内置，定位和判定借 `ios-simulator-mcp` 的三个只读查询**（`ui_find_element` / `ui_describe_all` / `ui_describe_point`），存证截图也借它的 `screenshot`。无障碍树是内置那套唯一缺的东西，而它恰好是这个 skill 的地基——控件位置和状态是**查出来的**、不是从截图上肉眼估的，这是 GUI 自动化里判定可靠与不可靠的分界线。能借就借，不要因为「这轮用内置」就把树扔了。
+
+**只有内置那套时**，定位只能从截图上估、判定只能靠肉眼看。不是不能测，是可靠性掉一档，得用别的办法补：
+
+- **每点一下就截一张图确认真的到了预期那屏，不要连点。** 坐标估歪时点空是静悄悄的，连点三下之后你已经不知道自己在哪一屏了。
+- **判成失败之前先多截一张**，排除是自己点歪了——没有 `ui_describe_point` 可以查「刚才那个坐标上是什么」，这个排除只能靠图。
+- **坐标单位要换算。** `tap` / `swipe` 吃的是**设备点**（左上角为原点），`launch` 的返回里给了这台设备的点尺寸；而 `screenshot` 出来的是**像素**图（iPhone 2x/3x）。截图上量到的像素直接喂给 `tap` 必偏——按 `点 = 像素 ÷ scale` 换算，或者用元素在整屏里的比例乘设备点尺寸。这是只有内置那套时最容易犯的错。
+- 报告的「环境」栏里写明本轮无无障碍树、判定基于截图，让读报告的人知道这份结论的置信度。
+
+### 安装 ios-simulator-mcp（两套都没有时）
+
+先把要做的事告诉用户——装 Facebook IDB（Homebrew + pipx）、把 MCP server 注册进 Claude Code——**得到他同意再执行**。这两条会动他机器上的环境，不是你该自作主张的范围。
 
 ```bash
 # 1. 前置：Facebook IDB。ios-simulator-mcp 的点击/输入/无障碍树全靠它，缺了整套 ui_* 都会失败
@@ -69,7 +95,7 @@ git diff <base>...<head>          # 三点：只看 head 独有的改动
 1. **`CLAUDE.md` / `README.md`** —— 构建命令、测试命令、已知的坑通常写在这儿，这是最权威的来源。
 2. **scheme**：`xcodebuild -list -project <X>.xcodeproj`（有 `.xcworkspace` 就用 `-workspace`）
 3. **bundleId**：`xcodebuild -showBuildSettings -scheme <S> -configuration Debug | grep PRODUCT_BUNDLE_IDENTIFIER` —— Debug 配置常带 `.debug` 后缀，用错了就是 launch 不起来或者启到了旧的 Release 包。
-4. **模拟器**：用户指定了机型/系统版本就按他说的，没指定就用当前已启动的那台（`get_booted_sim_id`）。型号和 iOS 版本记下来，报告里要写。
+4. **模拟器**：用户指定了机型/系统版本就按他说的，没指定就用当前已启动的那台（ios-simulator-mcp 用 `get_booted_sim_id`；只有内置那套时用 `xcrun simctl list devices | grep Booted`）。型号和 iOS 版本记下来，报告里要写。
 
 ## Step 3 — 分析影响范围
 
@@ -90,7 +116,7 @@ git diff <base>...<head>          # 三点：只看 head 独有的改动
 
 ## Step 4 — 写用例，等用户确认
 
-用例要**能被机械执行**——写「点首页右下角的 + 按钮」，不是「新建一条回忆」；预期结果要**能被查证**——写「顶部出现『编辑』标题栏，右上角『完成』按钮为 enabled」，不是「进入编辑态」。含糊的用例执行时全靠临场发挥，等于没写。预期结果尽量写成无障碍树里查得到的东西（某个 label 出现/消失、某个按钮可点），这类判定是确定的；纯视觉的（布局错位、颜色、文字截断）才靠截图看。
+用例要**能被机械执行**——写「点首页右下角的 + 按钮」，不是「新建一条回忆」；预期结果要**能被查证**——写「顶部出现『编辑』标题栏，右上角『完成』按钮为 enabled」，不是「进入编辑态」。含糊的用例执行时全靠临场发挥，等于没写。预期结果尽量写成无障碍树里查得到的东西（某个 label 出现/消失、某个按钮可点），这类判定是确定的；纯视觉的（布局错位、颜色、文字截断）才靠截图看。**Step 0 选的是内置那套时读不到树**，判定只能落在截图上看得出的差别，写用例时就按这个尺度写。
 
 | 编号 | 标题 | 类型 | 前置条件 | 操作步骤 | 预期结果 |
 |------|------|------|---------|---------|---------|
@@ -98,7 +124,7 @@ git diff <base>...<head>          # 三点：只看 head 独有的改动
 
 优先级：改动主路径 > 回归面 > 边界与异常。**数量控制在 8~15 条**——每条用例在模拟器上都要真点一遍，写 40 条的结果是跑不完，最后靠脑补补齐。
 
-**用例里出现中文输入的，现在就标出来。** `ui_type` 只接受 ASCII 可打印字符，中文和 emoji 输不进去（Step 6 有绕法）。这在写用例阶段就该定下怎么办，不要等跑到一半才发现这条做不了。
+**用例里出现中文输入的，现在就标出来。** 模拟器的文本输入对中文和 emoji 不一定吃得下（`ui_type` 明确只收 ASCII 可打印字符，Step 6 有绕法）。这在写用例阶段就该定下怎么办，不要等跑到一半才发现这条做不了。
 
 ### 确认关卡（不能跳）
 
@@ -118,26 +144,38 @@ git diff <base>...<head>          # 三点：只看 head 独有的改动
 
 ## Step 5 — 把这次改动装进模拟器
 
-五步，构建之外全是 MCP：
+**内置那套（首选）——四步全在 MCP 里：**
+
+```
+1. control { action: "attach" }                          # 先开面板
+2. build   { action: "build", project_path 或 workspace_path（绝对路径）,
+             scheme, configuration: "Debug", device: "<机型或 UDID>" }   # 立即返回 build_id
+3. build   { action: "build_status", build_id }          # 轮询到成功，拿 .app 路径与编译错误
+4. control { action: "launch", app_path: "<.app 绝对路径>", bundle_id }   # 装+起一步到位
+```
+
+`launch` 的返回里有**这台设备的点尺寸**，记下来——后面所有坐标都以它为基准。
+
+**ios-simulator-mcp——五步，构建之外全是 MCP：**
 
 ```
 1. mcp__ios-simulator__open_simulator      # 打开 Simulator.app，用户在自己屏幕上看得见
 2. mcp__ios-simulator__get_booted_sim_id   # 拿 UDID，后面构建和装包都要用
-3. xcodebuild ...                          # 构建（MCP 不做构建，见下）
+3. xcodebuild ...                          # 构建（这套 MCP 不做构建，见下）
 4. mcp__ios-simulator__install_app   { app_path: "<.app 绝对路径>" }
 5. mcp__ios-simulator__launch_app    { bundle_id: "<bundleId>", terminate_running: true }
 ```
 
-**`open_simulator` 不要省，而且放在最前面。** 它秒开，作用是让用户从构建阶段就盯着这块屏幕；你后面点的每一下他都在同一个窗口里看得到。跳过它照样能跑（idb 直接驱动已启动的模拟器），但用户就全盲了，出问题没法跟你对齐现场。
+**`attach` / `open_simulator` 不要省，而且放在最前面。** 秒开，作用是让用户从构建阶段就盯着这块屏幕；你后面点的每一下他都在同一个窗口里看得到。跳过照样能跑，但用户就全盲了，出问题没法跟你对齐现场。没有已启动的模拟器时 `attach` 会直接报错——先 boot 再 attach。
 
-**MCP 够不着的只有两件事**，用命令行补，别扩大：
+**MCP 够不着的事**，用命令行补，别扩大：
 
 ```bash
-# ① boot 指定机型（get_booted_sim_id 返回空，或启着的不是用户要的机型时）
+# ① boot 指定机型（没有 booted 设备，或启着的不是用户要的机型时）——两套都需要
 xcrun simctl list devices available | grep "iPhone 17 Pro"
 xcrun simctl boot <UDID>
 
-# ② 构建（ios-simulator-mcp 只负责模拟器，不负责编译）
+# ② 构建 —— 只有走 ios-simulator-mcp 时需要；内置那套用它自己的 build
 xcodebuild -project <绝对路径>.xcodeproj -scheme <S> -configuration Debug \
   -destination "platform=iOS Simulator,id=<UDID>" \
   -derivedDataPath /tmp/gui-test-build build
@@ -145,58 +183,69 @@ xcodebuild -project <绝对路径>.xcodeproj -scheme <S> -configuration Debug \
 # 产物：/tmp/gui-test-build/Build/Products/Debug-iphonesimulator/<App>.app
 ```
 
-构建失败先把完整报错给用户看，不要自己改工程配置去凑编过——那已经不是 GUI 测试的范围了。
+构建失败先把完整报错给用户看（内置那套的报错在 `build_status` 里），不要自己改工程配置去凑编过——那已经不是 GUI 测试的范围了。
 
-**多台模拟器同时开着时，每个 MCP 调用都显式传 `udid`。** 所有工具的 `udid` 都是可选的，不传就打给「当前 booted」那台；开了两台就成了随机赌博，点到隔壁机器上还会得出一条莫名其妙的失败。只有一台时可以省。
+**多台模拟器同时开着时，每个 MCP 调用都显式传 `udid` / `device`。** 两套工具的这个参数都是可选的，不传就打给「当前 booted」那台；开了两台就成了随机赌博，点到隔壁机器上还会得出一条莫名其妙的失败。只有一台时可以省。
 
-MCP 报错时**把错误原样告诉用户，停在这儿等他处理**。`idb` 相关的报错基本都是环境问题（IDB 没装好、companion 没起来、Xcode 没选对、模拟器没授权），多数需要用户输密码才能修，绕过去只是把问题推迟到更难查的地方。
+MCP 报错时**把错误原样告诉用户，停在这儿等他处理**。`idb` 相关的报错基本都是环境问题（IDB 没装好、companion 没起来、Xcode 没选对、模拟器没授权）；内置那套的环境类报错（xcode-select 指错、缺 iOS 平台、设备没授权）会把修法写在错误里，照着说。多数需要用户输密码才能修，绕过去只是把问题推迟到更难查的地方。
 
-**装完先确认装的是这次改动的包**：`list_apps` 看 bundleId 在不在，再 `ui_view` 截一眼，在界面上找到这次改动引入的可见元素，或者核对 `.app` 的时间戳晚于构建开始时刻。测了半天旧包全绿是这类工作最尴尬的失败方式，而这一步只要十秒。
+**装完先确认装的是这次改动的包**：截一眼（`control { action: "screenshot" }` 或 `ui_view`），在界面上找到这次改动引入的可见元素，或者核对 `.app` 的时间戳晚于构建开始时刻；走 ios-simulator-mcp 时还可以 `list_apps` 看 bundleId 在不在。测了半天旧包全绿是这类工作最尴尬的失败方式，而这一步只要十秒。
 
-要验「首次安装」态（UserDefaults 回默认）时，MCP 没有卸载动作：在主屏用 `ui_tap` 给图标一个 `duration: "1.0"` 的长按进抖动态删掉，或者请用户跑一句 `xcrun simctl uninstall <UDID> <bundleId>`，然后重新 `install_app` + `launch_app`。
+要验「首次安装」态（UserDefaults 回默认）时，两套 MCP 都没有卸载动作：在主屏长按图标（内置 `control { action: "tap", duration: 1.0 }`，ios-simulator-mcp `ui_tap { duration: "1.0" }`）进抖动态删掉，或者请用户跑一句 `xcrun simctl uninstall <UDID> <bundleId>`，然后重新装起。
 
 ## Step 6 — 逐条执行，边跑边留证据
 
-工具对照表，照着挑：
+工具对照表，按 Step 0 选定的那套挑（`control` 指 `mcp__Claude_Code_iOS_Simulator__control`）：
 
-| 要做的事 | 工具 |
-|---------|------|
-| 按文案找控件、拿坐标 | `ui_find_element { search: ["新建"], type: "Button" }` |
-| 读整屏结构 | `ui_describe_all` |
-| 查某个坐标上是什么控件 | `ui_describe_point { x, y }` |
-| 看一眼当前屏幕 | `ui_view`（压缩图，回到对话里） |
-| 存证截图 | `screenshot { output_path: "<绝对路径>.png" }` |
-| 点击 / 长按 | `ui_tap { x, y, duration? }` |
-| 滑动 / 滚动 / 拨开关 | `ui_swipe { x_start, y_start, x_end, y_end, delta? }` |
-| 输入文本（仅 ASCII） | `ui_type { text }` |
-| 深链直达某页 | `open_url { url: "myapp://..." }` |
-| 用例间复位 | `launch_app { bundle_id, terminate_running: true }` |
-| 整轮录屏（可选） | `record_video` / `stop_recording` |
+| 要做的事 | 内置 | ios-simulator-mcp |
+|---------|------|------|
+| 按文案找控件、拿坐标 | ❌ 无，只能看截图估 | `ui_find_element { search: ["新建"], type: "Button" }` |
+| 读整屏结构 | ❌ | `ui_describe_all` |
+| 查某个坐标上是什么控件 | ❌ | `ui_describe_point { x, y }` |
+| 看一眼当前屏幕 | `control { action: "screenshot" }` | `ui_view`（压缩图） |
+| 存证截图（落盘） | ❌ 见下面的绕法 | `screenshot { output_path: "<绝对路径>.png" }` |
+| 点击 / 长按 | `control { action: "tap", x, y, duration? }` | `ui_tap { x, y, duration? }` |
+| 滑动 / 滚动 / 拨开关 | `control { action: "swipe", x, y, x2, y2, duration? }` | `ui_swipe { x_start, y_start, x_end, y_end, delta? }` |
+| 曲线拖拽 / 长按后拖 / 双指缩放 | `control { action: "touch_path" / "touch2_path" }` | ❌ |
+| 输入文本（仅 ASCII） | `control { action: "text", text }` | `ui_type { text }` |
+| 按 Home / 锁屏等硬件键 | `control { action: "button", name: "HOME" }` | ❌ |
+| 深链直达某页 | `control { action: "open_url", url }` | `open_url { url: "myapp://..." }` |
+| 用例间复位 | `control { action: "launch", app_path, bundle_id }` | `launch_app { bundle_id, terminate_running: true }` |
+| 整轮录屏（可选） | ❌ | `record_video` / `stop_recording` |
+
+**两套都在会话里就混着用**：驱动（点、划、输入）走内置，`ui_find_element` / `ui_describe_all` / `ui_describe_point` 和落盘 `screenshot` 借 ios-simulator-mcp。理由见 Step 0。
+
+**只有内置那套时，存证截图这样落盘**——`screenshot` 只把图回到对话里，报告引用不到：
+
+```bash
+xcrun simctl io <UDID> screenshot "<报告目录>/screenshots/TC-01-step3.png"
+```
 
 每条用例按步骤驱动，关键节点确认真实界面，并**在看到的当下就把它写成一行观察记录**（`TC-01 步骤3：顶部出现「编辑」标题栏，右上角「完成」为 enabled，正文区 3 行文本`）。报告里「实际结果」一栏只能从这些当场记录里长出来，攒到最后再回忆必然失真。
 
 几个实操要点：
 
-- **定位优先用 `ui_find_element`，不要从截图上肉眼估坐标。** 它返回的 frame 已经是 point 单位，中心点 `(x + width/2, y + height/2)` 直接喂给 `ui_tap`。截图是像素图（iPhone 是 2x/3x），拿截图像素当坐标点必偏——这是 GUI 自动化最常见的错误来源。找不到元素时才退回 `ui_describe_all` 通读结构，再不行才目测。
-- **判定优先看无障碍树。** 「按钮变可点」「标题变成 X」「列表多了一行」在 `ui_describe_all` / `ui_find_element` 里是确定的事实；截图留给视觉类判定（布局错位、颜色、文字截断、图片没加载）。两者都留一份最好：树用来判定，图用来存证。
+- **能查树就别肉眼估坐标。** `ui_find_element` 返回的 frame 已经是 point 单位，中心点 `(x + width/2, y + height/2)` 直接喂给点击工具。截图是像素图（iPhone 2x/3x），拿截图像素当坐标点必偏——这是 GUI 自动化最常见的错误来源。找不到元素时才退回 `ui_describe_all` 通读结构，再不行才目测。**只有内置那套、必须从截图估坐标时，先按 `点 = 像素 ÷ scale` 换算**（scale 由 `launch` 返回的设备点尺寸和截图像素尺寸相除得出），估完点一下、截一张图确认真的点中了再往下走。
+- **判定优先看无障碍树。** 「按钮变可点」「标题变成 X」「列表多了一行」在 `ui_describe_all` / `ui_find_element` 里是确定的事实；截图留给视觉类判定（布局错位、颜色、文字截断、图片没加载）。两者都留一份最好：树用来判定，图用来存证。树读不到时，判定就明确写成「截图上看到…」，别把看图的结论包装成确定事实。
 - **点之前先确认当前在哪一屏。** 界面一变坐标就废了，上一步的 frame 不能拿到下一步用。
-- **`ui_type` 只吃 ASCII 可打印字符**，中文和 emoji 输不进去。绕法按优先级：换成 ASCII 测试数据（只要用例验的不是中文本身）→ 用 `open_url` 带参数深链把数据灌进去 → 请用户手动敲一次那段中文。都不行就把这条记为「未覆盖」并写明原因，**不要硬试出一条假失败**。
-- **`ui_tap` 拨不动的控件（开关类常见）改用 `ui_swipe`** 在控件上横划（关：从右往左约 30pt）。
-- **判成失败之前，先排除是自己点错了。** 用 `ui_describe_point` 查一下刚才那个坐标上到底是什么控件，再确认界面有没有停在上一步、有没有弹窗/键盘挡住。功能真坏了 / 流程没走到那一步 / 我点歪了——把第三种写成 bug，会浪费开发者半天时间去查一个不存在的问题。
+- **中文输入。** `ui_type` 只吃 ASCII 可打印字符，中文和 emoji 输不进去；内置的 `text` 没有声明这个限制，可以先试一次，输进去了就正常测。真输不进去时按优先级绕：换成 ASCII 测试数据（只要用例验的不是中文本身）→ 用 `open_url` 带参数深链把数据灌进去 → 请用户手动敲一次那段中文。都不行就把这条记为「未覆盖」并写明原因，**不要硬试出一条假失败**。
+- **点击拨不动的控件（开关类常见）改用滑动**，在控件上横划（关：从右往左约 30pt）。
+- **内置那套的滑动别贴着屏幕边起手。** 起点落在离边缘 4pt 以内时，`swipe` / `touch_path` 走的是系统边缘手势——左边=返回、上边=通知中心、下边=home/多任务、右边=控制中心，不是你要的那次列表滚动。贴边元素往里挪几个点再起手。
+- **判成失败之前，先排除是自己点错了。** 有 `ui_describe_point` 就查一下刚才那个坐标上到底是什么控件；没有就多截一张图，确认界面有没有停在上一步、有没有弹窗/键盘挡住。功能真坏了 / 流程没走到那一步 / 我点歪了——把第三种写成 bug，会浪费开发者半天时间去查一个不存在的问题。
 - **卡住最多重试两次**，然后记为「阻塞」并写清卡在哪一步、当时屏幕上是什么，继续下一条。一条用例死磕到底会拖垮整轮，而它本身往往只是个定位问题。
-- **用例之间复位状态**：`launch_app { terminate_running: true }` 一次冷启，比从当前页面一层层退回去可靠，也避免上一条用例的残留状态污染下一条。
+- **用例之间复位状态**：一次冷启（内置 `launch`，或 `launch_app { terminate_running: true }`）比从当前页面一层层退回去可靠，也避免上一条用例的残留状态污染下一条。
 
-需要特定前置状态时，能在 App 里或系统「设置」里点到的就点过去——语言与地区、通知与定位权限、深色模式、文字大小都在设置 App 中，`ui_find_element` + `ui_tap` 点得到；App 内的深层页面用 `open_url` 走 URL Scheme 直达，省掉一串导航点击，也少一串出错机会。
+需要特定前置状态时，能在 App 里或系统「设置」里点到的就点过去——语言与地区、通知与定位权限、深色模式、文字大小都在设置 App 中，找到控件点过去即可；App 内的深层页面用 `open_url` 走 URL Scheme 直达，省掉一串导航点击，也少一串出错机会。
 
-模拟器宿主菜单才能做的事（**旋转屏幕**、注入具体经纬度、摇一摇、模拟内存警告）这套工具够不着，**别为此绕到别的操作方式**：把它写进用例的前置条件请用户手动设一次（横屏用例就是请用户按 Cmd+→），或者归到「未覆盖」并注明原因。少测一条并说明，好过为了跑通而换一套用户看不见的操作方式。
+模拟器宿主菜单才能做的事（**旋转屏幕**、注入具体经纬度、摇一摇、模拟内存警告）两套 MCP 都够不着，**别为此绕到别的操作方式**：把它写进用例的前置条件请用户手动设一次（横屏用例就是请用户按 Cmd+→），或者归到「未覆盖」并注明原因。少测一条并说明，好过为了跑通而换一套用户看不见的操作方式。
 
-**旋转过的模拟器，idb 的点击坐标会和无障碍树对不上**——`ui_tap` 点下去没反应，`ui_describe_all` 却一切正常。所以横屏/旋转类用例排在所有点击用例之后跑；确实要在旋转后继续点，先 `xcrun simctl shutdown <UDID> && xcrun simctl boot <UDID>` 重启模拟器再继续。这个现象很像功能坏了，别把它写成 bug。
+**走 ios-simulator-mcp 时，旋转过的模拟器点击坐标会和无障碍树对不上**——`ui_tap` 点下去没反应，`ui_describe_all` 却一切正常（idb 的已知行为）。所以横屏/旋转类用例排在所有点击用例之后跑；确实要在旋转后继续点，先 `xcrun simctl shutdown <UDID> && xcrun simctl boot <UDID>` 重启模拟器再继续。这个现象很像功能坏了，别把它写成 bug。内置那套没有这个已知问题，但旋转后第一次点击仍然先截图确认点中了再连着往下点。
 
 ## Step 7 — 出报告
 
 写到被测仓库的 `gui-test-reports/<YYYYMMDD-HHmm>-<改动简述>.md`，这样报告能直接贴进 PR 或留档。目录还没被 `.gitignore` 收编时提醒用户一句，是否入库由他定。
 
-`screenshot` 的 `output_path` 直接给报告同目录 `screenshots/` 下的**绝对路径**（相对路径会落到 `~/Downloads` 或 `IOS_SIMULATOR_MCP_DEFAULT_OUTPUT_DIR`，不是你以为的地方），报告里用相对路径引用。每条用例至少留一张关键节点的图；失败的用例把出问题那一屏留下来，这是开发者复现的起点。
+存证图落到报告同目录的 `screenshots/` 下，报告里用相对路径引用。`screenshot` 的 `output_path` 必须给**绝对路径**（相对路径会落到 `~/Downloads` 或 `IOS_SIMULATOR_MCP_DEFAULT_OUTPUT_DIR`，不是你以为的地方）；只有内置那套时用 `xcrun simctl io <UDID> screenshot <绝对路径>` 落盘。每条用例至少留一张关键节点的图；失败的用例把出问题那一屏留下来，这是开发者复现的起点。
 
 证据以 Step 6 的当场观察记录为主——每一步写清屏幕上**实际**是什么，而不是「符合预期」。
 
@@ -207,7 +256,7 @@ MCP 报错时**把错误原样告诉用户，停在这儿等他处理**。`idb` 
 |----|------|
 | 被测改动 | PR #123 / 本地未提交改动 / `release-x`...`dev-y` |
 | 构建 | scheme `<S>` · Debug · commit `<短 sha>` |
-| 环境 | iPhone 17 Pro · iOS 26.0 · ios-simulator-mcp |
+| 环境 | iPhone 17 Pro · iOS 26.0 · <ios-simulator-mcp（有无障碍树判定）/ Claude Desktop 内置模拟器 MCP（无无障碍树，判定基于截图）> |
 | 执行时间 | 2026-09-04 15:20 ~ 15:48 |
 | 结论 | 通过 8 · 失败 2 · 阻塞 1 · 未覆盖 3 |
 
